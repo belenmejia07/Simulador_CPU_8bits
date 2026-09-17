@@ -8,9 +8,15 @@ var COLOR_DATA_SEG = '#F1EFE8';
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('CPU Simulador')
-    .addItem('1. Inicializar memoria', 'initMemory')
+    .addItem('1. Inicializar todo', 'initTodo')
+    .addItem('Reset registros', 'resetRegistros')
     .addItem('Probar Read/Write (demo)', 'testReadWrite')
     .addToUi();
+}
+
+function initTodo() {
+  initMemory();
+  initRegistros();
 }
 
 function initMemory() {
@@ -58,3 +64,47 @@ function testReadWrite() {
 // ---- Utilidades que ya vamos a necesitar más adelante ----
 function hex(n) { return '0x' + Number(n).toString(16).toUpperCase().padStart(2, '0'); }
 function bin(n) { return Number(n).toString(2).padStart(8, '0'); }
+
+
+
+
+
+
+
+
+// ================== DÍA 2: REGISTROS Y FLAGS ==================
+var REG_COL_LABEL = 19, REG_COL_VALUE = 20;
+var ROW_PC = 3, ROW_IR_OP = 4, ROW_IR1 = 5, ROW_IR2 = 6,
+    ROW_MAR = 7, ROW_MDR = 8, ROW_AX = 9, ROW_BX = 10,
+    ROW_ZF = 11, ROW_CF = 12, ROW_SF = 13, ROW_ESTADO = 14;
+
+function initRegistros() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+  var labels = [
+    [ROW_PC, 'PC'], [ROW_IR_OP, 'IR (opcode)'], [ROW_IR1, 'IR (op1)'], [ROW_IR2, 'IR (op2)'],
+    [ROW_MAR, 'MAR'], [ROW_MDR, 'MDR'], [ROW_AX, 'AX'], [ROW_BX, 'BX'],
+    [ROW_ZF, 'ZF'], [ROW_CF, 'CF'], [ROW_SF, 'SF'], [ROW_ESTADO, 'Estado']
+  ];
+  sheet.getRange(2, REG_COL_LABEL).setValue('REGISTROS').setFontWeight('bold');
+  labels.forEach(function (item) {
+    sheet.getRange(item[0], REG_COL_LABEL).setValue(item[1]).setFontWeight('bold');
+    sheet.getRange(item[0], REG_COL_VALUE).setBorder(true, true, true, true, true, true);
+  });
+  sheet.setColumnWidth(REG_COL_LABEL, 170);
+  sheet.setColumnWidth(REG_COL_VALUE, 90);
+  resetRegistros();
+}
+
+function resetRegistros() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+  [ROW_PC, ROW_IR_OP, ROW_IR1, ROW_IR2, ROW_MAR, ROW_MDR, ROW_AX, ROW_BX, ROW_ZF, ROW_CF, ROW_SF]
+    .forEach(function (row) { setCell(sheet, row, 0); });
+  setCell(sheet, ROW_ESTADO, 'LISTO');
+}
+
+function getCell(sheet, row) { return sheet.getRange(row, REG_COL_VALUE).getValue(); }
+function setCell(sheet, row, val) { sheet.getRange(row, REG_COL_VALUE).setValue(val); }
+function getReg(sheet, code) { return getCell(sheet, code === 0 ? ROW_AX : ROW_BX); }
+function setReg(sheet, code, val) { setCell(sheet, code === 0 ? ROW_AX : ROW_BX, val); }
+function regRow(code) { return code === 0 ? ROW_AX : ROW_BX; }
+function regName(code) { return code === 0 ? 'AX' : 'BX'; }
