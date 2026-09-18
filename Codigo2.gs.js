@@ -9,14 +9,23 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('CPU Simulador')
     .addItem('1. Inicializar todo', 'initTodo')
-    .addItem('Reset registros', 'resetRegistros')
-    .addItem('Probar Read/Write (demo)', 'testReadWrite')
+    .addSeparator()
+    .addItem('Step', 'stepCPU')
+    .addItem('Run', 'runCPU')
+    .addItem('Reset', 'resetCPU')
+    .addItem('Recargar programa', 'loadProgram')
     .addToUi();
 }
 
 function initTodo() {
   initMemory();
   initRegistros();
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var log = ss.getSheetByName(LOG_SHEET_NAME) || ss.insertSheet(LOG_SHEET_NAME);
+  log.clear();
+  log.getRange(1, 1, 1, 3).setValues([['Paso', 'Fase', 'Detalle']]).setFontWeight('bold');
+  log.setColumnWidth(3, 500);
+  resetCPU();
 }
 
 function initMemory() {
@@ -79,7 +88,7 @@ var ROW_PC = 3, ROW_IR_OP = 4, ROW_IR1 = 5, ROW_IR2 = 6,
     ROW_ZF = 11, ROW_CF = 12, ROW_SF = 13, ROW_ESTADO = 14;
 
 function initRegistros() {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
   var labels = [
     [ROW_PC, 'PC'], [ROW_IR_OP, 'IR (opcode)'], [ROW_IR1, 'IR (op1)'], [ROW_IR2, 'IR (op2)'],
     [ROW_MAR, 'MAR'], [ROW_MDR, 'MDR'], [ROW_AX, 'AX'], [ROW_BX, 'BX'],
@@ -108,3 +117,108 @@ function getReg(sheet, code) { return getCell(sheet, code === 0 ? ROW_AX : ROW_B
 function setReg(sheet, code, val) { setCell(sheet, code === 0 ? ROW_AX : ROW_BX, val); }
 function regRow(code) { return code === 0 ? ROW_AX : ROW_BX; }
 function regName(code) { return code === 0 ? 'AX' : 'BX'; }
+
+
+
+
+
+
+// ================== DÍA 3: CICLO DE INSTRUCCIÓN ==================
+var LOG_SHEET_NAME = 'Log';
+var ROW_FASE = 15, ROW_MNEMO = 16;
+
+var PROGRAMA = [
+  [0x00, 0x01, 0x00, 0x05], // MOV AX,5
+  [0x03, 0x01, 0x01, 0x03], // MOV BX,3
+  [0x06, 0x05, 0x00, 0x01], // ADD AX,BX
+  [0x09, 0xFF, 0x00, 0x00]  // HLT
+];
+
+function loadProgram() {
+  for (var a = 0; a < 0x20; a++) Write(a, 0);
+  PROGRAMA.forEach(function (instr) {
+    Write(instr[0], instr[1]); Write(instr[0] + 1, instr[2]); Write(instr[0] + 2, instr[3]);
+  });
+}
+
+function resetCPU() {
+  resetRegistros();
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+  setCell(sheet, ROW_FASE, 0);
+  setCell(sheet, ROW_MNEMO, '-');
+  loadProgram();
+  var log = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(LOG_SHEET_NAME);
+  log.getRange(2, 1, Math.max(log.getLastRow() - 1, 1), 3).clearContent();
+}
+
+function stepCPU() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+  if (getCell(sheet, ROW_ESTADO) === 'DETENIDO') { appendLog('-', 'CPU detenida. Usa Reset.'); return; }
+  var fase = getCell(sheet, ROW_FASE);
+  if (fase === 0) { doFetch(sheet); setCell(sheet, ROW_FASE, 1); }
+  else if (fase === 1) { doDecode(sheet); setCell(sheet, ROW_FASE, 2); }
+  else if (fase === 2) { doExecute(sheet); setCell(sheet, ROW_FASE, 3); }
+  else { doStore(sheet); setCell(sheet, ROW_FASE, 0); }
+}
+
+function runCPU() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+  var i = 0;
+  while (getCell(sheet, ROW_ESTADO) !== 'DETENIDO' && i < 200) {
+    stepCPU(); SpreadsheetApp.flush(); Utilities.sleep(250); i++;
+  }
+}
+
+function doFetch(sheet) {
+  var pc = getCell(sheet, ROW_PC);
+  setCell(sheet, ROW_MAR, pc);
+  var opcode = Read(pc), op1 = Read(pc + 1), op2 = Read(pc + 2);
+  setCell(sheet, ROW_MDR, opcode);
+  setCell(sheet, ROW_IR_OP, opcode); setCell(sheet, ROW_IR1, op1); setCell(sheet, ROW_IR2, op2);
+  setCell(sheet, ROW_PC, pc + 3);
+  appendLog('FETCH', 'PC=' + hex(pc) + ' -> IR=[' + hex(opcode) + ',' + hex(op1) + ',' + hex(op2) + ']');
+}
+
+function doDecode(sheet) {
+  var op = getCell(sheet, ROW_IR_OP), o1 = getCell(sheet, ROW_IR1), o2 = getCell(sheet, ROW_IR2);
+  var m = mnemonic(op, o1, o2);
+  setCell(sheet, ROW_MNEMO, m);
+  appendLog('DECODE', 'Instrucción: ' + m);
+}
+
+var EXEC_RESULT = 0;
+function doExecute(sheet) {
+  var op = getCell(sheet, ROW_IR_OP), o1 = getCell(sheet, ROW_IR1), o2 = getCell(sheet, ROW_IR2);
+  var detalle = '';
+  if (op === 0x01) { EXEC_RESULT = o2; detalle = 'Preparado ' + regName(o1) + ' <- ' + hex(o2); }
+  else if (op === 0x05) {
+    var raw = getReg(sheet, o1) + getReg(sheet, o2);
+    EXEC_RESULT = raw % 256;
+    setCell(sheet, ROW_ZF, EXEC_RESULT === 0 ? 1 : 0);
+    setCell(sheet, ROW_CF, raw > 255 ? 1 : 0);
+    setCell(sheet, ROW_SF, (EXEC_RESULT & 0x80) ? 1 : 0);
+    detalle = 'ALU: ' + regName(o1) + ' + ' + regName(o2);
+  } else if (op === 0xFF) { detalle = 'HLT: se detendrá en Store'; }
+  appendLog('EXECUTE', detalle);
+}
+
+function doStore(sheet) {
+  var op = getCell(sheet, ROW_IR_OP), o1 = getCell(sheet, ROW_IR1);
+  var detalle = '';
+  if (op === 0x01 || op === 0x05) { setReg(sheet, o1, EXEC_RESULT); detalle = regName(o1) + ' = ' + hex(EXEC_RESULT); }
+  else if (op === 0xFF) { setCell(sheet, ROW_ESTADO, 'DETENIDO'); detalle = 'CPU DETENIDA'; }
+  appendLog('STORE', detalle);
+}
+
+function mnemonic(op, o1, o2) {
+  if (op === 0x01) return 'MOV ' + regName(o1) + ', ' + hex(o2);
+  if (op === 0x05) return 'ADD ' + regName(o1) + ', ' + regName(o2);
+  if (op === 0xFF) return 'HLT';
+  return 'DESCONOCIDO (' + hex(op) + ')';
+}
+
+function appendLog(fase, texto) {
+  var log = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(LOG_SHEET_NAME);
+  var fila = log.getLastRow() + 1;
+  log.getRange(fila, 1, 1, 3).setValues([[fila - 1, fase, texto]]);
+}
