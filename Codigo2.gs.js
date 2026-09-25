@@ -2,39 +2,23 @@
  * SIMULADOR DE CPU DE 8 BITS - Google Apps Script
  * Parcial 1 - Arquitectura de Computadoras
  *
- * TARJETA 1: paneles Control Unit / Registers separados y coloreados,
- * banner de FASE ACTUAL, contador de PASO.
+ * TARJETA 1 (ya aplicada): paneles Control Unit / Registers, Fase, Paso.
+ * TARJETA 3 (nueva en este archivo): pestaña "Programa" editable — el
+ * programa ya NO está fijo en el arreglo PROGRAMA, sino que se lee como
+ * texto desde esa pestaña y se traduce a bytes con parseInstruction().
+ * Cambiar el texto y darle Reset recarga la memoria automáticamente;
+ * onEdit() lo hace también solo, sin necesitar Reset manual.
  *
  * Ciclo de instrucción: FETCH -> DECODE -> EXECUTE -> STORE
- * Cada clic en "Step" avanza UNA fase (no una instrucción completa).
- *
- * Formato de instrucción: 3 bytes fijos [opcode, operando1, operando2].
- *
- * ISA implementada:
- *   0x01 MOV reg, imm     op1=regDestino  op2=valor inmediato
- *   0x02 MOV reg, reg     op1=regDestino  op2=regOrigen
- *   0x03 LOAD reg, addr   op1=regDestino  op2=dirección memoria
- *   0x04 STORE addr, reg  op1=dirección   op2=regOrigen
- *   0x05 ADD reg, reg     op1=regDestino(y origen1) op2=regOrigen2
- *   0x06 SUB reg, reg     igual que ADD
- *   0x07 INC reg          op1=reg
- *   0x08 DEC reg          op1=reg
- *   0x09 CMP reg, reg     op1=reg1 op2=reg2 (solo actualiza flags)
- *   0x0A JMP addr         op1=dirección destino
- *   0x0B JZ addr          salta si ZF=1
- *   0x0C JNZ addr         salta si ZF=0
- *   0xFF HLT              detiene la CPU
- *
+ * ISA: MOV, LOAD, STORE, ADD, SUB, INC, DEC, CMP, JMP, JZ, JNZ, HLT
  * Códigos de registro: 0 = AX, 1 = BX
- *
- * Mapa de memoria (256 direcciones, 00h-FFh):
- *   0x00 - 0x1F  Segmento de CÓDIGO (32 bytes)
- *   0x20 - 0xFF  Segmento de DATOS
+ * Mapa de memoria: 0x00-0x1F código, 0x20-0xFF datos
  */
 
 // ---------------------- CONFIGURACIÓN DE CELDAS ----------------------
 var SHEET_NAME = 'CPU';
 var LOG_SHEET_NAME = 'Log';
+var PROG_SHEET_NAME = 'Programa';
 
 var MEM_ROW0 = 3;
 var MEM_COL0 = 2;
@@ -53,21 +37,16 @@ var ROW_ESTADO = 16;
 var ROW_FASE = 17;
 var ROW_MNEMO = 18;
 
-// Panel "celda activa" (detalle Hex/Bin/Dec de la dirección en MAR) — sin chocar con ROW_MNEMO
 var ROW_DET_ADDR = 20, ROW_DET_HEX = 21, ROW_DET_BIN = 22, ROW_DET_DEC = 23;
 
-var COLOR_FASE = ['#B5D4F4', '#FAC775', '#F0997B', '#9FE1CB']; // Fetch, Decode, Execute, Store
+var COLOR_FASE = ['#B5D4F4', '#FAC775', '#F0997B', '#9FE1CB'];
 var NOMBRES_FASE = ['FETCH', 'DECODE', 'EXECUTE', 'STORE'];
 
-var PROGRAMA = [
-  [0x00, 0x01, 0x00, 0x00], // MOV AX,0
-  [0x03, 0x01, 0x01, 0x05], // MOV BX,5
-  [0x06, 0x05, 0x00, 0x01], // ADD AX,BX
-  [0x09, 0x08, 0x01, 0x00], // DEC BX
-  [0x0C, 0x0C, 0x06, 0x00], // JNZ 0x06
-  [0x0F, 0x04, 0x20, 0x00], // STORE 0x20,AX
-  [0x12, 0xFF, 0x00, 0x00]  // HLT
+// Programa "semilla" — solo prellena la pestaña Programa la primera vez que se crea
+var PROGRAMA_DEFECTO = [
+  'MOV AX, 0x00', 'MOV BX, 0x05', 'ADD AX, BX', 'DEC BX', 'JNZ 0x06', 'STORE 0x20, AX', 'HLT'
 ];
+var CURRENT_PROGRAM = []; // se llena en loadProgram() leyendo la pestaña Programa
 
 var COLOR_FETCH = '#B5D4F4';
 var COLOR_DECODE = '#FAC775';
@@ -85,8 +64,15 @@ function onOpen() {
     .addItem('Step (avanzar una fase)', 'stepCPU')
     .addItem('Run (ejecutar hasta HLT)', 'runCPU')
     .addItem('Reset', 'resetCPU')
-    .addItem('Recargar programa demo', 'loadProgram')
     .addToUi();
+}
+
+// Se dispara solo al editar la columna "Código" (B) de la pestaña Programa
+function onEdit(e) {
+  var sheet = e.range.getSheet();
+  if (sheet.getName() === PROG_SHEET_NAME && e.range.getColumn() === 2) {
+    resetCPU();
+  }
 }
 
 // ---------------------- SETUP INICIAL (correr una sola vez) ----------------------
@@ -116,8 +102,67 @@ function initMemory() {
   log.getRange(1, 1, 1, 3).setValues([['Paso', 'Fase', 'Detalle']]).setFontWeight('bold');
   log.setColumnWidth(3, 500);
 
-  initRegistros();  // <-- FALTABA esta llamada (Problema 1)
+  buildProgramSheet(); // <-- NUEVO: crea/prellena la pestaña Programa si no existe
+  initRegistros();
   resetCPU();
+}
+
+// ---------------------- PESTAÑA "PROGRAMA" (editable) + PARSER ----------------------
+function buildProgramSheet() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (ss.getSheetByName(PROG_SHEET_NAME)) return; // no pisar ediciones si ya existe
+  var sheet = ss.insertSheet(PROG_SHEET_NAME);
+  sheet.getRange(1, 1, 1, 3).setValues([['PC', 'Código', 'Comentario']]).setFontWeight('bold');
+  PROGRAMA_DEFECTO.forEach(function (texto, i) {
+    sheet.getRange(i + 2, 1, 1, 2).setValues([[i, texto]]);
+  });
+  sheet.setColumnWidth(2, 220);
+}
+
+function isRegistro(tok) { return tok && (tok.toUpperCase() === 'AX' || tok.toUpperCase() === 'BX'); }
+function regCode(tok) { return tok.toUpperCase() === 'BX' ? 1 : 0; }
+function parseNum(tok) {
+  tok = String(tok).trim().replace('[', '').replace(']', '');
+  return tok.toLowerCase().indexOf('0x') === 0 ? parseInt(tok, 16) : parseInt(tok, 10);
+}
+
+// Convierte texto tipo "MOV AX, 0x05" en {opcode, op1, op2}
+function parseInstruction(texto) {
+  var limpio = texto.replace(/,/g, ' ').trim().split(/\s+/);
+  var mnem = limpio[0].toUpperCase();
+  var a = limpio[1], b = limpio[2];
+  switch (mnem) {
+    case 'MOV':
+      return isRegistro(b) ? { opcode: 0x02, op1: regCode(a), op2: regCode(b) }
+                            : { opcode: 0x01, op1: regCode(a), op2: parseNum(b) };
+    case 'LOAD': return { opcode: 0x03, op1: regCode(a), op2: parseNum(b) };
+    case 'STORE': return { opcode: 0x04, op1: parseNum(a), op2: regCode(b) };
+    case 'ADD': return { opcode: 0x05, op1: regCode(a), op2: regCode(b) };
+    case 'SUB': return { opcode: 0x06, op1: regCode(a), op2: regCode(b) };
+    case 'INC': return { opcode: 0x07, op1: regCode(a), op2: 0 };
+    case 'DEC': return { opcode: 0x08, op1: regCode(a), op2: 0 };
+    case 'CMP': return { opcode: 0x09, op1: regCode(a), op2: regCode(b) };
+    case 'JMP': return { opcode: 0x0A, op1: parseNum(a), op2: 0 };
+    case 'JZ': return { opcode: 0x0B, op1: parseNum(a), op2: 0 };
+    case 'JNZ': return { opcode: 0x0C, op1: parseNum(a), op2: 0 };
+    case 'HLT': return { opcode: 0xFF, op1: 0, op2: 0 };
+    default: return { opcode: 0xFF, op1: 0, op2: 0 }; // texto no reconocido -> se trata como HLT
+  }
+}
+
+// Lee la pestaña Programa completa y calcula la dirección real de cada instrucción
+function parseProgramSheet() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PROG_SHEET_NAME);
+  var lastRow = sheet.getLastRow();
+  var resultado = [];
+  for (var row = 2; row <= lastRow; row++) {
+    var texto = sheet.getRange(row, 2).getValue();
+    if (!texto) continue;
+    var idx = row - 2, addr = idx * 3;
+    var parsed = parseInstruction(String(texto));
+    resultado.push({ addr: addr, opcode: parsed.opcode, op1: parsed.op1, op2: parsed.op2, texto: String(texto) });
+  }
+  return resultado;
 }
 
 // ---------------------- PANEL DE REGISTROS / CONTROL UNIT / FASE / PASO ----------------------
@@ -143,7 +188,6 @@ function initRegistros() {
       sheet.getRange(item[0], REG_COL_VALUE).setBorder(true, true, true, true, true, true);
     });
 
-  // Panel de celda activa — vive aquí, ya no duplicado en initMemory (Problema 3)
   sheet.getRange(ROW_DET_ADDR - 1, REG_COL_LABEL).setValue('CELDA ACTIVA (según MAR)').setFontWeight('bold');
   ['Dirección', 'Hex', 'Binario', 'Decimal'].forEach(function (t, i) {
     sheet.getRange(ROW_DET_ADDR + i, REG_COL_LABEL).setValue(t);
@@ -173,23 +217,23 @@ function updatePasoCounter() {
   setCell(ss.getSheetByName(SHEET_NAME), ROW_PASO, Math.max(ss.getSheetByName(LOG_SHEET_NAME).getLastRow() - 1, 0));
 }
 
-// ---------------------- CARGA DE PROGRAMA ----------------------
+// ---------------------- CARGA DE PROGRAMA (AHORA lee la pestaña Programa) ----------------------
 function loadProgram() {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
   for (var a = 0; a < 0x20; a++) writeMem(sheet, a, 0);
-  PROGRAMA.forEach(function (instr) {
-    var addr = instr[0];
-    writeMem(sheet, addr, instr[1]);
-    writeMem(sheet, addr + 1, instr[2]);
-    writeMem(sheet, addr + 2, instr[3]);
+  CURRENT_PROGRAM = parseProgramSheet();
+  CURRENT_PROGRAM.forEach(function (instr) {
+    writeMem(sheet, instr.addr, instr.opcode);
+    writeMem(sheet, instr.addr + 1, instr.op1);
+    writeMem(sheet, instr.addr + 2, instr.op2);
   });
 }
 
-// ---------------------- RESET (simplificado: reutiliza resetRegistros) ----------------------
+// ---------------------- RESET ----------------------
 function resetCPU() {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
   clearHighlights(sheet);
-  resetRegistros();               // Problema 6: ya no duplica los setCell uno por uno
+  resetRegistros();
   setCell(sheet, ROW_MNEMO, '-');
   loadProgram();
   updateDetailPanel(sheet, 0);
@@ -207,7 +251,7 @@ function stepCPU() {
   }
   clearHighlights(sheet);
   var fase = getCell(sheet, ROW_FASE);
-  setFaseDisplay(sheet, fase);    // Problema 4: ahora sí se llama
+  setFaseDisplay(sheet, fase);
   if (fase === 0) { doFetch(sheet); setCell(sheet, ROW_FASE, 1); }
   else if (fase === 1) { doDecode(sheet); setCell(sheet, ROW_FASE, 2); }
   else if (fase === 2) { doExecute(sheet); setCell(sheet, ROW_FASE, 3); }
@@ -494,5 +538,5 @@ function appendLog(fase, texto) {
   var log = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(LOG_SHEET_NAME);
   var fila = log.getLastRow() + 1;
   log.getRange(fila, 1, 1, 3).setValues([[fila - 1, fase, texto]]);
-  updatePasoCounter();  // Problema 5: ahora sí se llama
+  updatePasoCounter();
 }
