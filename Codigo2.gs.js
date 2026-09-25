@@ -3,11 +3,10 @@
  * Parcial 1 - Arquitectura de Computadoras
  *
  * TARJETA 1 (ya aplicada): paneles Control Unit / Registers, Fase, Paso.
- * TARJETA 3 (nueva en este archivo): pestaña "Programa" editable — el
- * programa ya NO está fijo en el arreglo PROGRAMA, sino que se lee como
- * texto desde esa pestaña y se traduce a bytes con parseInstruction().
- * Cambiar el texto y darle Reset recarga la memoria automáticamente;
- * onEdit() lo hace también solo, sin necesitar Reset manual.
+ * TARJETA 3 (ya aplicada): pestaña "Programa" editable + parser.
+ * TARJETA 2 (nueva en este archivo): diagrama visual de la ALU
+ * (Operando1/Operando2/Status/Result) y Cola de Instrucciones con la
+ * línea que se está ejecutando resaltada en azul.
  *
  * Ciclo de instrucción: FETCH -> DECODE -> EXECUTE -> STORE
  * ISA: MOV, LOAD, STORE, ADD, SUB, INC, DEC, CMP, JMP, JZ, JNZ, HLT
@@ -39,14 +38,20 @@ var ROW_MNEMO = 18;
 
 var ROW_DET_ADDR = 20, ROW_DET_HEX = 21, ROW_DET_BIN = 22, ROW_DET_DEC = 23;
 
+// NUEVO: Cola de Instrucciones (columnas A-C, debajo de la grilla de memoria)
+var ROW_COLA_HEADER = 20, ROW_COLA_SUB = 21, ROW_COLA_DATA0 = 22, ROW_COLA_MAX = 20;
+
+// NUEVO: Diagrama de la ALU (columnas V-Y = 22-25)
+var ALU_COL1 = 22;
+var ALU_ROW_HEADER = 2, ALU_ROW_OPERANDS = 3, ALU_ROW_STATUS = 5, ALU_ROW_RESULT = 7;
+
 var COLOR_FASE = ['#B5D4F4', '#FAC775', '#F0997B', '#9FE1CB'];
 var NOMBRES_FASE = ['FETCH', 'DECODE', 'EXECUTE', 'STORE'];
 
-// Programa "semilla" — solo prellena la pestaña Programa la primera vez que se crea
 var PROGRAMA_DEFECTO = [
   'MOV AX, 0x00', 'MOV BX, 0x05', 'ADD AX, BX', 'DEC BX', 'JNZ 0x06', 'STORE 0x20, AX', 'HLT'
 ];
-var CURRENT_PROGRAM = []; // se llena en loadProgram() leyendo la pestaña Programa
+var CURRENT_PROGRAM = [];
 
 var COLOR_FETCH = '#B5D4F4';
 var COLOR_DECODE = '#FAC775';
@@ -67,7 +72,6 @@ function onOpen() {
     .addToUi();
 }
 
-// Se dispara solo al editar la columna "Código" (B) de la pestaña Programa
 function onEdit(e) {
   var sheet = e.range.getSheet();
   if (sheet.getName() === PROG_SHEET_NAME && e.range.getColumn() === 2) {
@@ -96,21 +100,23 @@ function initMemory() {
   }
   sheet.getRange(MEM_ROW0 - 2, MEM_COL0).setValue('Azul claro = segmento de código (00-1F)   |   Gris = segmento de datos (20-FF)').setFontStyle('italic');
   sheet.setColumnWidths(MEM_COL0, 16, 35);
+  sheet.setColumnWidths(1, 3, 90); // NUEVO: columnas A-C para la Cola de Instrucciones
 
   var log = ss.getSheetByName(LOG_SHEET_NAME) || ss.insertSheet(LOG_SHEET_NAME);
   log.clear();
   log.getRange(1, 1, 1, 3).setValues([['Paso', 'Fase', 'Detalle']]).setFontWeight('bold');
   log.setColumnWidth(3, 500);
 
-  buildProgramSheet(); // <-- NUEVO: crea/prellena la pestaña Programa si no existe
+  buildProgramSheet();
   initRegistros();
+  initALUDiagram(); // NUEVO
   resetCPU();
 }
 
 // ---------------------- PESTAÑA "PROGRAMA" (editable) + PARSER ----------------------
 function buildProgramSheet() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  if (ss.getSheetByName(PROG_SHEET_NAME)) return; // no pisar ediciones si ya existe
+  if (ss.getSheetByName(PROG_SHEET_NAME)) return;
   var sheet = ss.insertSheet(PROG_SHEET_NAME);
   sheet.getRange(1, 1, 1, 3).setValues([['PC', 'Código', 'Comentario']]).setFontWeight('bold');
   PROGRAMA_DEFECTO.forEach(function (texto, i) {
@@ -126,7 +132,6 @@ function parseNum(tok) {
   return tok.toLowerCase().indexOf('0x') === 0 ? parseInt(tok, 16) : parseInt(tok, 10);
 }
 
-// Convierte texto tipo "MOV AX, 0x05" en {opcode, op1, op2}
 function parseInstruction(texto) {
   var limpio = texto.replace(/,/g, ' ').trim().split(/\s+/);
   var mnem = limpio[0].toUpperCase();
@@ -146,11 +151,10 @@ function parseInstruction(texto) {
     case 'JZ': return { opcode: 0x0B, op1: parseNum(a), op2: 0 };
     case 'JNZ': return { opcode: 0x0C, op1: parseNum(a), op2: 0 };
     case 'HLT': return { opcode: 0xFF, op1: 0, op2: 0 };
-    default: return { opcode: 0xFF, op1: 0, op2: 0 }; // texto no reconocido -> se trata como HLT
+    default: return { opcode: 0xFF, op1: 0, op2: 0 };
   }
 }
 
-// Lee la pestaña Programa completa y calcula la dirección real de cada instrucción
 function parseProgramSheet() {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PROG_SHEET_NAME);
   var lastRow = sheet.getLastRow();
@@ -163,6 +167,52 @@ function parseProgramSheet() {
     resultado.push({ addr: addr, opcode: parsed.opcode, op1: parsed.op1, op2: parsed.op2, texto: String(texto) });
   }
   return resultado;
+}
+
+// ---------------------- NUEVO: DIAGRAMA VISUAL DE LA ALU ----------------------
+function initALUDiagram() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+  sheet.getRange(ALU_ROW_HEADER, ALU_COL1, 1, 4).merge().setValue('ALU').setFontWeight('bold').setBackground('#AFC9EA').setHorizontalAlignment('center');
+  sheet.getRange(ALU_ROW_OPERANDS, ALU_COL1).setValue('Operando1').setFontWeight('bold');
+  sheet.getRange(ALU_ROW_OPERANDS, ALU_COL1 + 1).setBorder(true, true, true, true, true, true);
+  sheet.getRange(ALU_ROW_OPERANDS, ALU_COL1 + 2).setValue('Operando2').setFontWeight('bold');
+  sheet.getRange(ALU_ROW_OPERANDS, ALU_COL1 + 3).setBorder(true, true, true, true, true, true);
+  sheet.getRange(ALU_ROW_STATUS, ALU_COL1).setValue('Status').setFontWeight('bold');
+  sheet.getRange(ALU_ROW_STATUS, ALU_COL1 + 1, 1, 3).merge().setBorder(true, true, true, true, true, true);
+  sheet.getRange(ALU_ROW_RESULT, ALU_COL1).setValue('Result').setFontWeight('bold');
+  sheet.getRange(ALU_ROW_RESULT, ALU_COL1 + 1).setBorder(true, true, true, true, true, true);
+  sheet.setColumnWidths(ALU_COL1, 4, 75);
+}
+function updateALUDiagram(op1val, op2val, statusStr, resultVal) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+  sheet.getRange(ALU_ROW_OPERANDS, ALU_COL1 + 1).setValue(hex(op1val));
+  sheet.getRange(ALU_ROW_OPERANDS, ALU_COL1 + 3).setValue(hex(op2val));
+  sheet.getRange(ALU_ROW_STATUS, ALU_COL1 + 1).setValue(statusStr);
+  sheet.getRange(ALU_ROW_RESULT, ALU_COL1 + 1).setValue(hex(resultVal));
+}
+
+// ---------------------- NUEVO: COLA DE INSTRUCCIONES ----------------------
+function buildInstructionQueue() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+  sheet.getRange(ROW_COLA_HEADER, 1, 1, 3).merge().setValue('COLA DE INSTRUCCIONES (editar en pestaña Programa)').setFontWeight('bold').setBackground('#FFD9A0').setHorizontalAlignment('center');
+  sheet.getRange(ROW_COLA_SUB, 1, 1, 3).setValues([['DIR', 'DATO', 'INSTR']]).setFontWeight('bold');
+  sheet.getRange(ROW_COLA_DATA0, 1, ROW_COLA_MAX, 3).clearContent().setBackground('#FFFFFF');
+  CURRENT_PROGRAM.forEach(function (instr, i) {
+    var row = ROW_COLA_DATA0 + i;
+    var dato = hex(instr.opcode) + ' ' + hex(instr.op1) + ' ' + hex(instr.op2);
+    sheet.getRange(row, 1, 1, 3).setValues([[hex(instr.addr), dato, instr.texto]])
+      .setBorder(true, true, true, true, true, true);
+  });
+}
+function updateInstructionQueue(addr) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+  var row = ROW_COLA_DATA0;
+  while (row <= ROW_COLA_DATA0 + ROW_COLA_MAX) {
+    var dirTxt = sheet.getRange(row, 1).getValue();
+    if (!dirTxt) break;
+    sheet.getRange(row, 1, 1, 3).setBackground(parseNum(dirTxt) === addr ? COLOR_FETCH : '#FFFFFF');
+    row++;
+  }
 }
 
 // ---------------------- PANEL DE REGISTROS / CONTROL UNIT / FASE / PASO ----------------------
@@ -217,7 +267,7 @@ function updatePasoCounter() {
   setCell(ss.getSheetByName(SHEET_NAME), ROW_PASO, Math.max(ss.getSheetByName(LOG_SHEET_NAME).getLastRow() - 1, 0));
 }
 
-// ---------------------- CARGA DE PROGRAMA (AHORA lee la pestaña Programa) ----------------------
+// ---------------------- CARGA DE PROGRAMA ----------------------
 function loadProgram() {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
   for (var a = 0; a < 0x20; a++) writeMem(sheet, a, 0);
@@ -227,6 +277,7 @@ function loadProgram() {
     writeMem(sheet, instr.addr + 1, instr.op1);
     writeMem(sheet, instr.addr + 2, instr.op2);
   });
+  buildInstructionQueue(); // NUEVO
 }
 
 // ---------------------- RESET ----------------------
@@ -237,6 +288,7 @@ function resetCPU() {
   setCell(sheet, ROW_MNEMO, '-');
   loadProgram();
   updateDetailPanel(sheet, 0);
+  updateInstructionQueue(-1); // NUEVO: apaga cualquier resaltado previo
 
   var log = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(LOG_SHEET_NAME);
   log.getRange(2, 1, Math.max(log.getLastRow() - 1, 1), 3).clearContent();
@@ -289,6 +341,7 @@ function doFetch(sheet) {
   highlightReg(sheet, ROW_MAR, COLOR_FETCH);
   highlightReg(sheet, ROW_MDR, COLOR_FETCH);
   updateDetailPanel(sheet, pc);
+  updateInstructionQueue(pc); // NUEVO
   appendLog('FETCH', 'PC=' + hex(pc) + ' -> IR=[' + hex(opcode) + ',' + hex(op1) + ',' + hex(op2) + ']  PC actualizado a ' + hex(pc + 3));
 }
 
@@ -452,15 +505,19 @@ function execALU(sheet, op1, op2, tipo) {
   if (raw < 0) cf = 1;
   result = ((raw % 256) + 256) % 256;
 
-  setCell(sheet, ROW_ZF, result === 0 ? 1 : 0);
+  var zf = result === 0 ? 1 : 0;
+  var sf = (result & 0x80) ? 1 : 0;
+  setCell(sheet, ROW_ZF, zf);
   setCell(sheet, ROW_CF, cf);
-  setCell(sheet, ROW_SF, (result & 0x80) ? 1 : 0);
+  setCell(sheet, ROW_SF, sf);
 
+  var resultadoFinal = (tipo === 'CMP') ? a : result;
   if (tipo !== 'CMP') {
     PropertiesService.getScriptProperties().setProperty('EXEC_RESULT', String(result));
   } else {
     PropertiesService.getScriptProperties().setProperty('EXEC_RESULT', String(a));
   }
+  updateALUDiagram(a, b, 'Z:' + zf + ' C:' + cf + ' S:' + sf, resultadoFinal); // NUEVO
 }
 
 // ---------------------- MEMORIA ----------------------
