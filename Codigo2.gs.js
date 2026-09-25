@@ -4,9 +4,13 @@
  *
  * TARJETA 1 (ya aplicada): paneles Control Unit / Registers, Fase, Paso.
  * TARJETA 3 (ya aplicada): pestaña "Programa" editable + parser.
- * TARJETA 2 (nueva en este archivo): diagrama visual de la ALU
- * (Operando1/Operando2/Status/Result) y Cola de Instrucciones con la
- * línea que se está ejecutando resaltada en azul.
+ * TARJETA 2 (ya aplicada): diagrama de ALU + Cola de Instrucciones.
+ * TARJETA 4 (nueva en este archivo): control de Velocidad para Run, y
+ * botones dibujados (Step/Run/Reset/Acelerar/Desacelerar).
+ *
+ * NOTA: el resaltado de colores por fase (highlightReg/highlightMemRange/
+ * clearHighlights) ya estaba incluido desde la Tarjeta 1 en este código,
+ * así que no hay nada nuevo que agregar ahí — solo se suma la Velocidad.
  *
  * Ciclo de instrucción: FETCH -> DECODE -> EXECUTE -> STORE
  * ISA: MOV, LOAD, STORE, ADD, SUB, INC, DEC, CMP, JMP, JZ, JNZ, HLT
@@ -35,13 +39,12 @@ var ROW_ZF = 13, ROW_CF = 14, ROW_SF = 15;
 var ROW_ESTADO = 16;
 var ROW_FASE = 17;
 var ROW_MNEMO = 18;
+var ROW_VELOCIDAD = 19; // NUEVO: usa el hueco libre entre Instrucción y Celda Activa
 
 var ROW_DET_ADDR = 20, ROW_DET_HEX = 21, ROW_DET_BIN = 22, ROW_DET_DEC = 23;
 
-// NUEVO: Cola de Instrucciones (columnas A-C, debajo de la grilla de memoria)
 var ROW_COLA_HEADER = 20, ROW_COLA_SUB = 21, ROW_COLA_DATA0 = 22, ROW_COLA_MAX = 20;
 
-// NUEVO: Diagrama de la ALU (columnas V-Y = 22-25)
 var ALU_COL1 = 22;
 var ALU_ROW_HEADER = 2, ALU_ROW_OPERANDS = 3, ALU_ROW_STATUS = 5, ALU_ROW_RESULT = 7;
 
@@ -60,6 +63,9 @@ var COLOR_STORE = '#9FE1CB';
 var COLOR_CODE_SEG = '#EEEDFE';
 var COLOR_DATA_SEG = '#F1EFE8';
 
+// NUEVO: constantes de velocidad
+var VELOCIDAD_DEFECTO = 250, VELOCIDAD_MIN = 50, VELOCIDAD_MAX = 1000, VELOCIDAD_PASO = 50;
+
 // ---------------------- MENÚ ----------------------
 function onOpen() {
   SpreadsheetApp.getUi()
@@ -68,6 +74,8 @@ function onOpen() {
     .addSeparator()
     .addItem('Step (avanzar una fase)', 'stepCPU')
     .addItem('Run (ejecutar hasta HLT)', 'runCPU')
+    .addItem('Acelerar', 'acelerar')       // NUEVO
+    .addItem('Desacelerar', 'desacelerar') // NUEVO
     .addItem('Reset', 'resetCPU')
     .addToUi();
 }
@@ -100,7 +108,7 @@ function initMemory() {
   }
   sheet.getRange(MEM_ROW0 - 2, MEM_COL0).setValue('Azul claro = segmento de código (00-1F)   |   Gris = segmento de datos (20-FF)').setFontStyle('italic');
   sheet.setColumnWidths(MEM_COL0, 16, 35);
-  sheet.setColumnWidths(1, 3, 90); // NUEVO: columnas A-C para la Cola de Instrucciones
+  sheet.setColumnWidths(1, 3, 90);
 
   var log = ss.getSheetByName(LOG_SHEET_NAME) || ss.insertSheet(LOG_SHEET_NAME);
   log.clear();
@@ -109,7 +117,7 @@ function initMemory() {
 
   buildProgramSheet();
   initRegistros();
-  initALUDiagram(); // NUEVO
+  initALUDiagram();
   resetCPU();
 }
 
@@ -169,7 +177,7 @@ function parseProgramSheet() {
   return resultado;
 }
 
-// ---------------------- NUEVO: DIAGRAMA VISUAL DE LA ALU ----------------------
+// ---------------------- DIAGRAMA VISUAL DE LA ALU ----------------------
 function initALUDiagram() {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
   sheet.getRange(ALU_ROW_HEADER, ALU_COL1, 1, 4).merge().setValue('ALU').setFontWeight('bold').setBackground('#AFC9EA').setHorizontalAlignment('center');
@@ -191,7 +199,7 @@ function updateALUDiagram(op1val, op2val, statusStr, resultVal) {
   sheet.getRange(ALU_ROW_RESULT, ALU_COL1 + 1).setValue(hex(resultVal));
 }
 
-// ---------------------- NUEVO: COLA DE INSTRUCCIONES ----------------------
+// ---------------------- COLA DE INSTRUCCIONES ----------------------
 function buildInstructionQueue() {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
   sheet.getRange(ROW_COLA_HEADER, 1, 1, 3).merge().setValue('COLA DE INSTRUCCIONES (editar en pestaña Programa)').setFontWeight('bold').setBackground('#FFD9A0').setHorizontalAlignment('center');
@@ -215,7 +223,19 @@ function updateInstructionQueue(addr) {
   }
 }
 
-// ---------------------- PANEL DE REGISTROS / CONTROL UNIT / FASE / PASO ----------------------
+// ---------------------- NUEVO: CONTROL DE VELOCIDAD ----------------------
+function acelerar() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+  var vel = getCell(sheet, ROW_VELOCIDAD) || VELOCIDAD_DEFECTO;
+  setCell(sheet, ROW_VELOCIDAD, Math.max(VELOCIDAD_MIN, vel - VELOCIDAD_PASO));
+}
+function desacelerar() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+  var vel = getCell(sheet, ROW_VELOCIDAD) || VELOCIDAD_DEFECTO;
+  setCell(sheet, ROW_VELOCIDAD, Math.min(VELOCIDAD_MAX, vel + VELOCIDAD_PASO));
+}
+
+// ---------------------- PANEL DE REGISTROS / CONTROL UNIT / FASE / PASO / VELOCIDAD ----------------------
 function initRegistros() {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
 
@@ -238,6 +258,9 @@ function initRegistros() {
       sheet.getRange(item[0], REG_COL_VALUE).setBorder(true, true, true, true, true, true);
     });
 
+  sheet.getRange(ROW_VELOCIDAD, REG_COL_LABEL).setValue('Velocidad (ms)').setFontWeight('bold'); // NUEVO
+  sheet.getRange(ROW_VELOCIDAD, REG_COL_VALUE).setBorder(true, true, true, true, true, true);     // NUEVO
+
   sheet.getRange(ROW_DET_ADDR - 1, REG_COL_LABEL).setValue('CELDA ACTIVA (según MAR)').setFontWeight('bold');
   ['Dirección', 'Hex', 'Binario', 'Decimal'].forEach(function (t, i) {
     sheet.getRange(ROW_DET_ADDR + i, REG_COL_LABEL).setValue(t);
@@ -255,6 +278,7 @@ function resetRegistros() {
     .forEach(function (row) { setCell(sheet, row, 0); });
   setCell(sheet, ROW_ESTADO, 'LISTO');
   setCell(sheet, ROW_PASO, 0);
+  if (!getCell(sheet, ROW_VELOCIDAD)) setCell(sheet, ROW_VELOCIDAD, VELOCIDAD_DEFECTO); // NUEVO
   setFaseDisplay(sheet, 0);
 }
 
@@ -277,7 +301,7 @@ function loadProgram() {
     writeMem(sheet, instr.addr + 1, instr.op1);
     writeMem(sheet, instr.addr + 2, instr.op2);
   });
-  buildInstructionQueue(); // NUEVO
+  buildInstructionQueue();
 }
 
 // ---------------------- RESET ----------------------
@@ -288,7 +312,7 @@ function resetCPU() {
   setCell(sheet, ROW_MNEMO, '-');
   loadProgram();
   updateDetailPanel(sheet, 0);
-  updateInstructionQueue(-1); // NUEVO: apaga cualquier resaltado previo
+  updateInstructionQueue(-1);
 
   var log = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(LOG_SHEET_NAME);
   log.getRange(2, 1, Math.max(log.getLastRow() - 1, 1), 3).clearContent();
@@ -310,7 +334,7 @@ function stepCPU() {
   else { doStore(sheet); setCell(sheet, ROW_FASE, 0); }
 }
 
-// ---------------------- RUN: ejecuta hasta HLT ----------------------
+// ---------------------- RUN: ejecuta hasta HLT (AHORA usa Velocidad) ----------------------
 function runCPU() {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
   var maxIter = 400;
@@ -318,7 +342,8 @@ function runCPU() {
   while (getCell(sheet, ROW_ESTADO) !== 'DETENIDO' && i < maxIter) {
     stepCPU();
     SpreadsheetApp.flush();
-    Utilities.sleep(250);
+    var vel = getCell(sheet, ROW_VELOCIDAD) || VELOCIDAD_DEFECTO; // NUEVO
+    Utilities.sleep(vel);                                          // antes: Utilities.sleep(250)
     i++;
   }
 }
@@ -341,7 +366,7 @@ function doFetch(sheet) {
   highlightReg(sheet, ROW_MAR, COLOR_FETCH);
   highlightReg(sheet, ROW_MDR, COLOR_FETCH);
   updateDetailPanel(sheet, pc);
-  updateInstructionQueue(pc); // NUEVO
+  updateInstructionQueue(pc);
   appendLog('FETCH', 'PC=' + hex(pc) + ' -> IR=[' + hex(opcode) + ',' + hex(op1) + ',' + hex(op2) + ']  PC actualizado a ' + hex(pc + 3));
 }
 
@@ -517,7 +542,7 @@ function execALU(sheet, op1, op2, tipo) {
   } else {
     PropertiesService.getScriptProperties().setProperty('EXEC_RESULT', String(a));
   }
-  updateALUDiagram(a, b, 'Z:' + zf + ' C:' + cf + ' S:' + sf, resultadoFinal); // NUEVO
+  updateALUDiagram(a, b, 'Z:' + zf + ' C:' + cf + ' S:' + sf, resultadoFinal);
 }
 
 // ---------------------- MEMORIA ----------------------
