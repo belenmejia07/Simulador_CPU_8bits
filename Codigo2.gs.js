@@ -305,10 +305,19 @@ function loadProgram() {
 }
 
 // ---------------------- RESET ----------------------
+function clearALUDiagram() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+  sheet.getRange(ALU_ROW_OPERANDS, ALU_COL1 + 1).setValue('-');
+  sheet.getRange(ALU_ROW_OPERANDS, ALU_COL1 + 3).setValue('-');
+  sheet.getRange(ALU_ROW_STATUS, ALU_COL1 + 1).setValue('-');
+  sheet.getRange(ALU_ROW_RESULT, ALU_COL1 + 1).setValue('-');
+}
+
 function resetCPU() {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
   clearHighlights(sheet);
   resetRegistros();
+  clearALUDiagram();
   setCell(sheet, ROW_MNEMO, '-');
   loadProgram();
   updateDetailPanel(sheet, 0);
