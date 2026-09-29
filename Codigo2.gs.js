@@ -39,7 +39,7 @@ var ROW_ZF = 13, ROW_CF = 14, ROW_SF = 15;
 var ROW_ESTADO = 16;
 var ROW_FASE = 17;
 var ROW_MNEMO = 18;
-var ROW_VELOCIDAD = 19; // NUEVO: usa el hueco libre entre Instrucción y Celda Activa
+var ROW_VELOCIDAD = 24; 
 
 var ROW_DET_ADDR = 20, ROW_DET_HEX = 21, ROW_DET_BIN = 22, ROW_DET_DEC = 23;
 
@@ -258,14 +258,15 @@ function initRegistros() {
       sheet.getRange(item[0], REG_COL_VALUE).setBorder(true, true, true, true, true, true);
     });
 
-  sheet.getRange(ROW_VELOCIDAD, REG_COL_LABEL).setValue('Velocidad (ms)').setFontWeight('bold'); // NUEVO
-  sheet.getRange(ROW_VELOCIDAD, REG_COL_VALUE).setBorder(true, true, true, true, true, true);     // NUEVO
-
   sheet.getRange(ROW_DET_ADDR - 1, REG_COL_LABEL).setValue('CELDA ACTIVA (según MAR)').setFontWeight('bold');
   ['Dirección', 'Hex', 'Binario', 'Decimal'].forEach(function (t, i) {
     sheet.getRange(ROW_DET_ADDR + i, REG_COL_LABEL).setValue(t);
     sheet.getRange(ROW_DET_ADDR + i, REG_COL_VALUE).setBorder(true, true, true, true, true, true);
   });
+
+  // Velocidad ahora va DESPUÉS del bloque de Celda Activa, en su propia fila libre
+  sheet.getRange(ROW_VELOCIDAD, REG_COL_LABEL).setValue('Velocidad (ms)').setFontWeight('bold');
+  sheet.getRange(ROW_VELOCIDAD, REG_COL_VALUE).setBorder(true, true, true, true, true, true);
 
   sheet.setColumnWidth(REG_COL_LABEL, 170);
   sheet.setColumnWidth(REG_COL_VALUE, 100);
@@ -325,6 +326,7 @@ function resetCPU() {
 
   var log = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(LOG_SHEET_NAME);
   log.getRange(2, 1, Math.max(log.getLastRow() - 1, 1), 3).clearContent();
+  sheet.getRange(ROW_DET_ADDR - 1, REG_COL_LABEL).setValue('CELDA ACTIVA (según MAR)');
 }
 
 // ---------------------- STEP: avanza UNA fase del ciclo ----------------------
