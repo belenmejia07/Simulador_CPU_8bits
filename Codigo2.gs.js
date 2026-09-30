@@ -2,15 +2,10 @@
  * SIMULADOR DE CPU DE 8 BITS - Google Apps Script
  * Parcial 1 - Arquitectura de Computadoras
  *
- * TARJETA 1 (ya aplicada): paneles Control Unit / Registers, Fase, Paso.
- * TARJETA 3 (ya aplicada): pestaña "Programa" editable + parser.
- * TARJETA 2 (ya aplicada): diagrama de ALU + Cola de Instrucciones.
- * TARJETA 4 (nueva en este archivo): control de Velocidad para Run, y
- * botones dibujados (Step/Run/Reset/Acelerar/Desacelerar).
- *
- * NOTA: el resaltado de colores por fase (highlightReg/highlightMemRange/
- * clearHighlights) ya estaba incluido desde la Tarjeta 1 en este código,
- * así que no hay nada nuevo que agregar ahí — solo se suma la Velocidad.
+ * Incluye: Tarjetas 1-4 (paneles, Programa editable, ALU/Cola, Velocidad),
+ * los 3 fixes (colisión Velocidad/Celda Activa, ALU sin limpiar, título
+ * residual), y las funciones nuevas del punto 2.5: PAUSA y LOAD PROGRAM
+ * (con efecto vacío -> se llena).
  *
  * Ciclo de instrucción: FETCH -> DECODE -> EXECUTE -> STORE
  * ISA: MOV, LOAD, STORE, ADD, SUB, INC, DEC, CMP, JMP, JZ, JNZ, HLT
@@ -39,9 +34,11 @@ var ROW_ZF = 13, ROW_CF = 14, ROW_SF = 15;
 var ROW_ESTADO = 16;
 var ROW_FASE = 17;
 var ROW_MNEMO = 18;
-var ROW_VELOCIDAD = 24; 
 
 var ROW_DET_ADDR = 20, ROW_DET_HEX = 21, ROW_DET_BIN = 22, ROW_DET_DEC = 23;
+
+var ROW_VELOCIDAD = 24; // ya corregido: antes chocaba en fila 19 con el título de Celda Activa
+var ROW_PAUSA = 25;     // NUEVO
 
 var ROW_COLA_HEADER = 20, ROW_COLA_SUB = 21, ROW_COLA_DATA0 = 22, ROW_COLA_MAX = 20;
 
@@ -63,7 +60,6 @@ var COLOR_STORE = '#9FE1CB';
 var COLOR_CODE_SEG = '#EEEDFE';
 var COLOR_DATA_SEG = '#F1EFE8';
 
-// NUEVO: constantes de velocidad
 var VELOCIDAD_DEFECTO = 250, VELOCIDAD_MIN = 50, VELOCIDAD_MAX = 1000, VELOCIDAD_PASO = 50;
 
 // ---------------------- MENÚ ----------------------
@@ -72,10 +68,12 @@ function onOpen() {
     .createMenu('CPU Simulador')
     .addItem('1. Inicializar todo (ejecutar primero)', 'initMemory')
     .addSeparator()
-    .addItem('Step (avanzar una fase)', 'stepCPU')
-    .addItem('Run (ejecutar hasta HLT)', 'runCPU')
-    .addItem('Acelerar', 'acelerar')       // NUEVO
-    .addItem('Desacelerar', 'desacelerar') // NUEVO
+    .addItem('Step', 'stepCPU')
+    .addItem('Run', 'runCPU')
+    .addItem('Pausa', 'pausarCPU')                              // NUEVO
+    .addItem('Cargar programa (LOAD PROGRAM)', 'cargarPrograma') // NUEVO
+    .addItem('Acelerar', 'acelerar')
+    .addItem('Desacelerar', 'desacelerar')
     .addItem('Reset', 'resetCPU')
     .addToUi();
 }
@@ -83,7 +81,7 @@ function onOpen() {
 function onEdit(e) {
   var sheet = e.range.getSheet();
   if (sheet.getName() === PROG_SHEET_NAME && e.range.getColumn() === 2) {
-    resetCPU();
+    reiniciarTodo(); // antes: resetCPU()
   }
 }
 
@@ -118,7 +116,9 @@ function initMemory() {
   buildProgramSheet();
   initRegistros();
   initALUDiagram();
-  resetCPU();
+  emptyMemoryAndQueue(); // deja memoria y Cola vacías
+  buildInstructionQueue(); // dibuja los encabezados "DIR | DATO | INSTR", sin filas
+  resetCPU(); // resetea registros/ALU/log, pero NO carga el programa
 }
 
 // ---------------------- PESTAÑA "PROGRAMA" (editable) + PARSER ----------------------
@@ -198,6 +198,13 @@ function updateALUDiagram(op1val, op2val, statusStr, resultVal) {
   sheet.getRange(ALU_ROW_STATUS, ALU_COL1 + 1).setValue(statusStr);
   sheet.getRange(ALU_ROW_RESULT, ALU_COL1 + 1).setValue(hex(resultVal));
 }
+function clearALUDiagram() { // NUEVO (fix)
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+  sheet.getRange(ALU_ROW_OPERANDS, ALU_COL1 + 1).setValue('-');
+  sheet.getRange(ALU_ROW_OPERANDS, ALU_COL1 + 3).setValue('-');
+  sheet.getRange(ALU_ROW_STATUS, ALU_COL1 + 1).setValue('-');
+  sheet.getRange(ALU_ROW_RESULT, ALU_COL1 + 1).setValue('-');
+}
 
 // ---------------------- COLA DE INSTRUCCIONES ----------------------
 function buildInstructionQueue() {
@@ -223,19 +230,7 @@ function updateInstructionQueue(addr) {
   }
 }
 
-// ---------------------- NUEVO: CONTROL DE VELOCIDAD ----------------------
-function acelerar() {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
-  var vel = getCell(sheet, ROW_VELOCIDAD) || VELOCIDAD_DEFECTO;
-  setCell(sheet, ROW_VELOCIDAD, Math.max(VELOCIDAD_MIN, vel - VELOCIDAD_PASO));
-}
-function desacelerar() {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
-  var vel = getCell(sheet, ROW_VELOCIDAD) || VELOCIDAD_DEFECTO;
-  setCell(sheet, ROW_VELOCIDAD, Math.min(VELOCIDAD_MAX, vel + VELOCIDAD_PASO));
-}
-
-// ---------------------- PANEL DE REGISTROS / CONTROL UNIT / FASE / PASO / VELOCIDAD ----------------------
+// ---------------------- PANEL DE REGISTROS / CONTROL UNIT / FASE / PASO / VELOCIDAD / PAUSA ----------------------
 function initRegistros() {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
 
@@ -264,9 +259,12 @@ function initRegistros() {
     sheet.getRange(ROW_DET_ADDR + i, REG_COL_VALUE).setBorder(true, true, true, true, true, true);
   });
 
-  // Velocidad ahora va DESPUÉS del bloque de Celda Activa, en su propia fila libre
+  // Velocidad y Pausa van DESPUÉS del bloque de Celda Activa (fix de colisión)
   sheet.getRange(ROW_VELOCIDAD, REG_COL_LABEL).setValue('Velocidad (ms)').setFontWeight('bold');
   sheet.getRange(ROW_VELOCIDAD, REG_COL_VALUE).setBorder(true, true, true, true, true, true);
+
+  sheet.getRange(ROW_PAUSA, REG_COL_LABEL).setValue('Pausa (bandera)').setFontWeight('bold'); // NUEVO
+  sheet.getRange(ROW_PAUSA, REG_COL_VALUE).setBorder(true, true, true, true, true, true);     // NUEVO
 
   sheet.setColumnWidth(REG_COL_LABEL, 170);
   sheet.setColumnWidth(REG_COL_VALUE, 100);
@@ -275,11 +273,11 @@ function initRegistros() {
 
 function resetRegistros() {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
-  [ROW_PC, ROW_IR_OP, ROW_IR1, ROW_IR2, ROW_MAR, ROW_MDR, ROW_AX, ROW_BX, ROW_ZF, ROW_CF, ROW_SF, ROW_FASE]
+  [ROW_PC, ROW_IR_OP, ROW_IR1, ROW_IR2, ROW_MAR, ROW_MDR, ROW_AX, ROW_BX, ROW_ZF, ROW_CF, ROW_SF, ROW_FASE, ROW_PAUSA]
     .forEach(function (row) { setCell(sheet, row, 0); });
   setCell(sheet, ROW_ESTADO, 'LISTO');
   setCell(sheet, ROW_PASO, 0);
-  if (!getCell(sheet, ROW_VELOCIDAD)) setCell(sheet, ROW_VELOCIDAD, VELOCIDAD_DEFECTO); // NUEVO
+  if (!getCell(sheet, ROW_VELOCIDAD)) setCell(sheet, ROW_VELOCIDAD, VELOCIDAD_DEFECTO);
   setFaseDisplay(sheet, 0);
 }
 
@@ -290,6 +288,13 @@ function setFaseDisplay(sheet, faseNum) {
 function updatePasoCounter() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   setCell(ss.getSheetByName(SHEET_NAME), ROW_PASO, Math.max(ss.getSheetByName(LOG_SHEET_NAME).getLastRow() - 1, 0));
+}
+
+// ---------------------- NUEVO: PAUSA ----------------------
+function pausarCPU() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+  setCell(sheet, ROW_PAUSA, 1);
+  appendLog('-', 'PAUSA solicitada por el usuario.');
 }
 
 // ---------------------- CARGA DE PROGRAMA ----------------------
@@ -305,28 +310,41 @@ function loadProgram() {
   buildInstructionQueue();
 }
 
-// ---------------------- RESET ----------------------
-function clearALUDiagram() {
+// NUEVO: deja memoria y Cola en blanco
+function emptyMemoryAndQueue() {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
-  sheet.getRange(ALU_ROW_OPERANDS, ALU_COL1 + 1).setValue('-');
-  sheet.getRange(ALU_ROW_OPERANDS, ALU_COL1 + 3).setValue('-');
-  sheet.getRange(ALU_ROW_STATUS, ALU_COL1 + 1).setValue('-');
-  sheet.getRange(ALU_ROW_RESULT, ALU_COL1 + 1).setValue('-');
+  for (var a = 0; a < 0x20; a++) writeMem(sheet, a, 0);
+  sheet.getRange(ROW_COLA_DATA0, 1, ROW_COLA_MAX, 3).clearContent().setBackground('#FFFFFF');
+  CURRENT_PROGRAM = [];
 }
 
+// NUEVO: función LOAD PROGRAM — vacía primero, luego llena (efecto visible)
+function cargarPrograma() {
+  emptyMemoryAndQueue();
+  SpreadsheetApp.flush();
+  Utilities.sleep(500);
+  loadProgram();
+  appendLog('-', 'Programa cargado desde la pestaña Programa.');
+}
+
+// NUEVO: usado por Inicializar y por onEdit — resetea registros Y recarga programa
+function reiniciarTodo() {
+  resetCPU();
+  cargarPrograma();
+}
+
+// ---------------------- RESET (ya NO recarga el programa — eso es LOAD PROGRAM) ----------------------
 function resetCPU() {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
   clearHighlights(sheet);
   resetRegistros();
   clearALUDiagram();
   setCell(sheet, ROW_MNEMO, '-');
-  loadProgram();
   updateDetailPanel(sheet, 0);
   updateInstructionQueue(-1);
 
   var log = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(LOG_SHEET_NAME);
   log.getRange(2, 1, Math.max(log.getLastRow() - 1, 1), 3).clearContent();
-  sheet.getRange(ROW_DET_ADDR - 1, REG_COL_LABEL).setValue('CELDA ACTIVA (según MAR)');
 }
 
 // ---------------------- STEP: avanza UNA fase del ciclo ----------------------
@@ -345,16 +363,18 @@ function stepCPU() {
   else { doStore(sheet); setCell(sheet, ROW_FASE, 0); }
 }
 
-// ---------------------- RUN: ejecuta hasta HLT (AHORA usa Velocidad) ----------------------
+// ---------------------- RUN: ejecuta hasta HLT (revisa Pausa y usa Velocidad) ----------------------
 function runCPU() {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+  setCell(sheet, ROW_PAUSA, 0); // limpia cualquier pausa previa al arrancar
   var maxIter = 400;
   var i = 0;
   while (getCell(sheet, ROW_ESTADO) !== 'DETENIDO' && i < maxIter) {
+    if (getCell(sheet, ROW_PAUSA) === 1) { return; } // NUEVO: corta el Run si alguien pausó
     stepCPU();
     SpreadsheetApp.flush();
-    var vel = getCell(sheet, ROW_VELOCIDAD) || VELOCIDAD_DEFECTO; // NUEVO
-    Utilities.sleep(vel);                                          // antes: Utilities.sleep(250)
+    var vel = getCell(sheet, ROW_VELOCIDAD) || VELOCIDAD_DEFECTO;
+    Utilities.sleep(vel);
     i++;
   }
 }
@@ -519,7 +539,8 @@ function doStore(sheet) {
       detalle = 'CPU DETENIDA';
       break;
     default:
-      detalle = '-';
+      setCell(sheet, ROW_ESTADO, 'DETENIDO'); // NUEVO: seguridad si la memoria está vacía/opcode inválido
+      detalle = 'Opcode desconocido — CPU detenida por seguridad';
   }
   props.deleteProperty('EXEC_RESULT');
   appendLog('STORE', detalle);
